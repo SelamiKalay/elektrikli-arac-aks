@@ -1263,7 +1263,14 @@ int main(void)
              * olmasa da ACK alamayip TEC yukselir -> yaniltici olur.
              * mcp_rec==0 dislanir: kendi bus-off kurtarmamiz REC'i sifirlar. */
             if ((mcp_rec != rec_onceki) && (mcp_rec != 0u) && (now >= BOOT_GRACE_MS))
+            {
                 obc_last_tick = now;
+                obc_rx_cnt++;   /* TANI: kadranda "R48f" olarak gorunur.
+                                 * Gecerli cerceve alinamadigi icin bu sayac artik
+                                 * "hat aktivitesi kac kez algilandi" demektir.
+                                 * R48f ARTIYORSA tespit calisiyor; 0'da KALIYORSA
+                                 * tespit hic tetiklenmiyor (veya eski firmware yuklu). */
+            }
 
             if (mcp_eflg & 0x20)                    /* TXBO: bus-off -> kilitlenmesin */
             {
