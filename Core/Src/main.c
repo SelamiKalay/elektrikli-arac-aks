@@ -587,7 +587,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcanRx)
  * TEC yalnizca gonderim BASARILI olunca azalir; dusuk TEC = hatta ACK veren
  * bir dugum VAR demektir. (REC kullanilmaz: Emerson kendiliginden yayin
  * yapmiyor, REC hep 0 kaliyor.) */
-#define EMERSON_TEC_ESIK      64U     /* TEC bunun ALTINDA = ACK aliniyor = takili */
+#define EMERSON_TEC_ESIK      64U     /* TEC bunun ALTINDA = link saglikli = takili */
 #define EMERSON_TEC_GUARD_MS  4000U   /* acilis/reset sonrasi TEC'in oturma suresi */
 
 /* CAN cerceve yapisi */
@@ -1259,6 +1259,7 @@ int main(void)
         {
             static uint32_t t_mcp_reset = 0;        /* son MCP reset ani (TEC sifirlanir) */
             uint8_t rec_onceki = mcp_rec;
+            uint8_t tec_onceki = mcp_tec;
             MCP_ReadDiag();                         /* EFLG/TEC/REC oku */
 
             /* ===== EMERSON VARLIK TESPITI =====
@@ -1266,13 +1267,21 @@ int main(void)
              * REC hep 0). ANCAK bizim sorgularimizi ACK'liyor -> bu ACK'i TEC
              * uzerinden olcuyoruz. Sonuc ayni obc_last_tick'i besler; debounce
              * (Kural 1) + hold-off (Kural 2) mantigi DEGISMEDEN calisir. */
-            /* ASIL TESPIT: TEC dusuk = Emerson cercevelerimizi ACK'liyor = TAKILI.
-             * Acilistan ve her MCP reset'inden sonra TEC 0'dan basladigi icin
-             * EMERSON_TEC_GUARD_MS boyunca karar verilmez (sahte "takili" olmasin). */
             uint8_t tec_oturdu = (now >= EMERSON_TEC_GUARD_MS) &&
                                  ((now - t_mcp_reset) >= EMERSON_TEC_GUARD_MS);
-            uint8_t emerson_var = (tec_oturdu && (mcp_tec < EMERSON_TEC_ESIK)) ? 1u : 0u;
-            /* YEDEK: gercek yayin baslarsa (REC hareketi) o da varlik sayilir */
+            uint8_t emerson_var = 0u;
+
+            /* 1) BIRINCIL: TEC AZALDI = en az bir cerceve ACK'lendi = Emerson TAKILI.
+             *    CAN kurali: TEC yalnizca BASARILI gonderimde azalir (-1), hatada +8.
+             *    Bu yuzden "azaldi" mutlak degerden BAGIMSIZ, ANINDA ve kesin isarettir.
+             *    (Mutlak esik tek basina yetmez: Emerson takilinca TEC 128'den saniyede
+             *     1 duser, 64'un altina inmesi ~64 sn surerdi -> kontaktor cok gec cekerdi.) */
+            if (tec_oturdu && (mcp_tec < tec_onceki)) emerson_var = 1u;
+
+            /* 2) DESTEK: TEC zaten dusukse link saglikli demektir (surekli ACK). */
+            if (tec_oturdu && (mcp_tec < EMERSON_TEC_ESIK)) emerson_var = 1u;
+
+            /* 3) YEDEK: Emerson gercekten yayin yapmaya baslarsa (REC hareketi). */
             if ((mcp_rec != rec_onceki) && (mcp_rec != 0u)) emerson_var = 1u;
 
             if (emerson_var && (now >= BOOT_GRACE_MS))
