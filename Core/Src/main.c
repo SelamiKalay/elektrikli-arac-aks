@@ -576,7 +576,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcanRx)
  *   HOLDOFF_MS : kontaktor cekiliyken veri ANLIK koparsa hemen birakmaz; veri
  *                bu kadar sure geri gelmezse "fis cekildi" deyip BIRAKIR. */
 #define DEBOUNCE_MS   2000U   /* Kural 1: cekmeden once kesintisiz veri suresi   */
-#define HOLDOFF_MS    1000U   /* Kural 2: birakmadan once veri-yok bekleme suresi */
+#define HOLDOFF_MS    6000U   /* Kural 2: birakmadan once veri-yok bekleme suresi.
+                              * Emerson ~2-3 sn'de bir yayinlar; pencere bunu ASMALI,
+                              * yoksa DEBOUNCE_MS hicbir zaman KESINTISIZ dolamaz. */
 #define BMS_FULL_SOC       100U           /* bu SOC'da batarya DOLU sayilir */
 
 /* CAN cerceve yapisi */
@@ -1261,15 +1263,18 @@ int main(void)
             uint8_t guard = 0;
             while (MCP2515_Recv(&rf) && guard++ < 16)
             {
-                obc_rx_all++;            /* tani: alinan TUM cerceveler */
-                OBC_RawCapture(&rf);     /* ham sakla (tani/decode) */
+                obc_rx_all++;            /* tani: alinan TUM cerceveler (ID farketmez) */
+                OBC_RawCapture(&rf);     /* ham sakla (tani/decode) - TUM ID'ler icin */
                 R48_ParseFrame(&rf);     /* eslesen ID -> Vout vb. */
-                /* FILTRE YOK: HERHANGI bir frame = ham "veri geldi" sinyali.
-                 * obc_link'i BURADA set ETMIYORUZ; karari Sarj_Kontrol'deki
-                 * debounce (Kural 1) + hold-off (Kural 2) veriyor. Burada sadece
-                 * son-frame zamanini isaretliyoruz. ACILIS KORUMASI: ilk
+                /* ID FILTRESI: SADECE gercek Emerson telemetri ID'leri (canli
+                 * yakalamayla dogrulanmis: 0x0707F803, 0x060F8003) obc_last_tick'i
+                 * tazeler. Gurultu/cop ID'ler (0x00000000 vb.) HOLDOFF_MS genisken
+                 * bile "sinyal var" sayilmaz -> bosta yanlis kontaktor cekmesi olmaz.
+                 * obc_link'i BURADA set ETMIYORUZ; karari Sarj_Kontrol'deki debounce
+                 * (Kural 1) + hold-off (Kural 2) veriyor. ACILIS KORUMASI: ilk
                  * BOOT_GRACE_MS icindeki frame'ler sayilmaz (acilis artigi). */
-                if (now >= BOOT_GRACE_MS)
+                if ((rf.id == R48_ID_TELEM || rf.id == 0x060F8003UL) &&
+                    (now >= BOOT_GRACE_MS))
                     obc_last_tick = now;
             }
         }
