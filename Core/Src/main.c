@@ -862,7 +862,11 @@ static void Sarj_Kontrol(uint32_t now)
      * obc_link=0: sinyal HOLDOFF_MS boyunca YOK olunca (fis cekildi). */
     {
         static uint32_t t_var = 0;   /* sinyal surekli VAR olmaya basladigi an */
-        uint8_t sinyal_var = ((now - obc_last_tick) < HOLDOFF_MS) ? 1u : 0u;
+        /* obc_last_tick==0 = "hic veri gelmedi" (sentinel). Bu kontrol olmadan
+         * "now-0=now < HOLDOFF_MS" acilistan itibaren HOLDOFF_MS boyunca YANLISLIKLA
+         * "sinyal var" sayilip, hic Emerson baglanmadan kontaktoru sahte cektiriyordu. */
+        uint8_t sinyal_var = ((obc_last_tick != 0u) &&
+                              ((now - obc_last_tick) < HOLDOFF_MS)) ? 1u : 0u;
 
         if (sinyal_var)
         {
@@ -1268,10 +1272,8 @@ int main(void)
                 R48_ParseFrame(&rf);     /* eslesen ID -> Vout vb. */
                 /* ID FILTRESI: SADECE gercek Emerson telemetri ID'leri (canli
                  * yakalamayla dogrulanmis: 0x0707F803, 0x060F8003) obc_last_tick'i
-                 * tazeler. Gurultu/cop ID'ler (0x00000000 vb.) HOLDOFF_MS genisken
-                 * bile "sinyal var" sayilmaz -> bosta yanlis kontaktor cekmesi olmaz.
-                 * obc_link'i BURADA set ETMIYORUZ; karari Sarj_Kontrol'deki debounce
-                 * (Kural 1) + hold-off (Kural 2) veriyor. ACILIS KORUMASI: ilk
+                 * tazeler. obc_link'i BURADA set ETMIYORUZ; karari Sarj_Kontrol'deki
+                 * debounce (Kural 1) + hold-off (Kural 2) veriyor. ACILIS KORUMASI: ilk
                  * BOOT_GRACE_MS icindeki frame'ler sayilmaz (acilis artigi). */
                 if ((rf.id == R48_ID_TELEM || rf.id == 0x060F8003UL) &&
                     (now >= BOOT_GRACE_MS))
