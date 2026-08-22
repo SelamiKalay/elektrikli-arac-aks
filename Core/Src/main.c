@@ -1095,7 +1095,7 @@ int main(void)
         if (HAL_GPIO_ReadPin(FAR_BUTON_GPIO_Port,      FAR_BUTON_Pin)      == OPTO_AKTIF) g_raw |= 0x04; /* far: buton=opto LOW (ters okuma kaldirildi; bosta role cekmesin) */
         if (HAL_GPIO_ReadPin(SAG_KAPI_GPIO_Port,       SAG_KAPI_Pin)       == OPTO_AKTIF) g_raw |= 0x08;
         if (HAL_GPIO_ReadPin(SOL_KAPI_GPIO_Port,       SOL_KAPI_Pin)       == OPTO_AKTIF) g_raw |= 0x10;
-        if (HAL_GPIO_ReadPin(FREN_GIRIS_GPIO_Port,     FREN_GIRIS_Pin)     == OPTO_AKTIF) g_raw |= 0x20;
+        if (HAL_GPIO_ReadPin(FREN_GIRIS_GPIO_Port,     FREN_GIRIS_Pin)     != OPTO_AKTIF) g_raw |= 0x20; /* fren: opto TERS kablolu (bosta AKTIF okunuyor) -> ters okuma */
         if (HAL_GPIO_ReadPin(DORTLU_BUTON_GPIO_Port,   DORTLU_BUTON_Pin)   == OPTO_AKTIF) g_raw |= 0x40;
 #if defined(SILECEK_BILGISI_Pin)
         if (HAL_GPIO_ReadPin(SILECEK_BILGISI_GPIO_Port, SILECEK_BILGISI_Pin) == OPTO_AKTIF) g_raw |= 0x80; /* silecek: switch=opto LOW (ters okuma kaldirildi; bosta role cekmesin) */
