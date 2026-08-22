@@ -580,6 +580,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcanRx)
                               * Emerson ~2-3 sn'de bir yayinlar; pencere bunu ASMALI,
                               * yoksa DEBOUNCE_MS hicbir zaman KESINTISIZ dolamaz. */
 #define BMS_FULL_SOC       100U           /* bu SOC'da batarya DOLU sayilir */
+/* ===== EMERSON VARLIK TESPITI: TX-ACK (TEC) =====
+ * CANLI OLCUM (dogrulandi):
+ *   TAKILI  -> yolladigimiz sorgular ACK'leniyor -> TEC DUSUK kalir (0..16 oynar)
+ *   CEKILI  -> hic ACK yok -> TEC 128'e tirmanip SABITLENIR
+ * TEC yalnizca gonderim BASARILI olunca azalir; dusuk TEC = hatta ACK veren
+ * bir dugum VAR demektir. (REC kullanilmaz: Emerson kendiliginden yayin
+ * yapmiyor, REC hep 0 kaliyor.) */
+#define EMERSON_TEC_ESIK      64U     /* TEC bunun ALTINDA = ACK aliniyor = takili */
+#define EMERSON_TEC_GUARD_MS  4000U   /* acilis/reset sonrasi TEC'in oturma suresi */
 
 /* CAN cerceve yapisi */
 typedef struct {
@@ -1248,21 +1257,25 @@ int main(void)
         obc_raw_dump();               /* Emerson ham cerceveleri (gercek ID'ler) */
         if (mcp_hazir)
         {
+            static uint32_t t_mcp_reset = 0;        /* son MCP reset ani (TEC sifirlanir) */
             uint8_t rec_onceki = mcp_rec;
             MCP_ReadDiag();                         /* EFLG/TEC/REC oku */
 
-            /* ===== EMERSON VARLIK TESPITI: HAT AKTIVITESI =====
-             * Sinyal butunlugu bozuk oldugundan MCP2515 gecerli cerceve
-             * cozemiyor (tumFrame artmiyor). ANCAK Emerson konustugu surece
-             * bozuk cerceveler RX hata sayacini (REC) HAREKET ettirir.
-             * Emerson fisten cekilince hatta aktivite kalmaz -> REC donar.
-             * Boylece "paket geliyor mu" sorusu "hat hareketli mi" olarak
-             * olculur; sonuc ayni obc_last_tick'i besler, debounce/hold-off
-             * mantigi DEGISMEDEN calisir.
-             * TEC KULLANILMAZ: her saniye sorgu yolladigimiz icin Emerson
-             * olmasa da ACK alamayip TEC yukselir -> yaniltici olur.
-             * mcp_rec==0 dislanir: kendi bus-off kurtarmamiz REC'i sifirlar. */
-            if ((mcp_rec != rec_onceki) && (mcp_rec != 0u) && (now >= BOOT_GRACE_MS))
+            /* ===== EMERSON VARLIK TESPITI =====
+             * Gecerli cerceve alinamiyor (Emerson kendiliginden yayin yapmiyor,
+             * REC hep 0). ANCAK bizim sorgularimizi ACK'liyor -> bu ACK'i TEC
+             * uzerinden olcuyoruz. Sonuc ayni obc_last_tick'i besler; debounce
+             * (Kural 1) + hold-off (Kural 2) mantigi DEGISMEDEN calisir. */
+            /* ASIL TESPIT: TEC dusuk = Emerson cercevelerimizi ACK'liyor = TAKILI.
+             * Acilistan ve her MCP reset'inden sonra TEC 0'dan basladigi icin
+             * EMERSON_TEC_GUARD_MS boyunca karar verilmez (sahte "takili" olmasin). */
+            uint8_t tec_oturdu = (now >= EMERSON_TEC_GUARD_MS) &&
+                                 ((now - t_mcp_reset) >= EMERSON_TEC_GUARD_MS);
+            uint8_t emerson_var = (tec_oturdu && (mcp_tec < EMERSON_TEC_ESIK)) ? 1u : 0u;
+            /* YEDEK: gercek yayin baslarsa (REC hareketi) o da varlik sayilir */
+            if ((mcp_rec != rec_onceki) && (mcp_rec != 0u)) emerson_var = 1u;
+
+            if (emerson_var && (now >= BOOT_GRACE_MS))
             {
                 obc_last_tick = now;
                 obc_rx_cnt++;   /* TANI: kadranda "R48f" olarak gorunur.
@@ -1276,6 +1289,7 @@ int main(void)
             {
                 mcp_hazir = MCP2515_Init();         /* yeniden baslat (kurtarma) */
                 mcp_rec = 0; mcp_tec = 0;           /* reset sonrasi sayaclar sifir */
+                t_mcp_reset = now;                  /* TEC yeniden oturana kadar bekle */
             }
         }
     }
