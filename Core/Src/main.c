@@ -580,8 +580,6 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcanRx)
                               * Emerson ~2-3 sn'de bir yayinlar; pencere bunu ASMALI,
                               * yoksa DEBOUNCE_MS hicbir zaman KESINTISIZ dolamaz. */
 #define BMS_FULL_SOC       100U           /* bu SOC'da batarya DOLU sayilir */
-#define BMS_SARJ_AKIM_ESIK   5      /* 0.1A biriminde: >0.5A = gercek sarj akimi var say
-                                    * (gurultu/sizinti akimini elemek icin). */
 
 /* CAN cerceve yapisi */
 typedef struct {
@@ -867,15 +865,8 @@ static void Sarj_Kontrol(uint32_t now)
         /* obc_last_tick==0 = "hic veri gelmedi" (sentinel). Bu kontrol olmadan
          * "now-0=now < HOLDOFF_MS" acilistan itibaren HOLDOFF_MS boyunca YANLISLIKLA
          * "sinyal var" sayilip, hic Emerson baglanmadan kontaktoru sahte cektiriyordu. */
-        uint8_t can_sarj_var = ((obc_last_tick != 0u) &&
-                                ((now - obc_last_tick) < HOLDOFF_MS)) ? 1u : 0u;
-        /* IKINCI SINYAL KAYNAGI: BMS gercek sarj akimi goruyor mu.
-         * Emerson CAN'i (bu projede tekrar tekrar guvenilmez cikti) bu sinyali
-         * hic gormese bile, batarya GERCEKTEN sarj akimi aliyorsa Kelly yine de
-         * kesilmeli -> bu VEYA mantigi guvenligi CAN'in guvenilirligine bagimli
-         * olmaktan cikarir. BMS/CAN2 bu projede hep guvenilir calisti. */
-        uint8_t bms_sarj_var = (bms_ok && bms_cur_x10 > BMS_SARJ_AKIM_ESIK) ? 1u : 0u;
-        uint8_t sinyal_var = (can_sarj_var || bms_sarj_var) ? 1u : 0u;
+        uint8_t sinyal_var = ((obc_last_tick != 0u) &&
+                              ((now - obc_last_tick) < HOLDOFF_MS)) ? 1u : 0u;
 
         if (sinyal_var)
         {
@@ -1257,9 +1248,28 @@ int main(void)
         obc_raw_dump();               /* Emerson ham cerceveleri (gercek ID'ler) */
         if (mcp_hazir)
         {
+            uint8_t rec_onceki = mcp_rec;
             MCP_ReadDiag();                         /* EFLG/TEC/REC oku */
+
+            /* ===== EMERSON VARLIK TESPITI: HAT AKTIVITESI =====
+             * Sinyal butunlugu bozuk oldugundan MCP2515 gecerli cerceve
+             * cozemiyor (tumFrame artmiyor). ANCAK Emerson konustugu surece
+             * bozuk cerceveler RX hata sayacini (REC) HAREKET ettirir.
+             * Emerson fisten cekilince hatta aktivite kalmaz -> REC donar.
+             * Boylece "paket geliyor mu" sorusu "hat hareketli mi" olarak
+             * olculur; sonuc ayni obc_last_tick'i besler, debounce/hold-off
+             * mantigi DEGISMEDEN calisir.
+             * TEC KULLANILMAZ: her saniye sorgu yolladigimiz icin Emerson
+             * olmasa da ACK alamayip TEC yukselir -> yaniltici olur.
+             * mcp_rec==0 dislanir: kendi bus-off kurtarmamiz REC'i sifirlar. */
+            if ((mcp_rec != rec_onceki) && (mcp_rec != 0u) && (now >= BOOT_GRACE_MS))
+                obc_last_tick = now;
+
             if (mcp_eflg & 0x20)                    /* TXBO: bus-off -> kilitlenmesin */
+            {
                 mcp_hazir = MCP2515_Init();         /* yeniden baslat (kurtarma) */
+                mcp_rec = 0; mcp_tec = 0;           /* reset sonrasi sayaclar sifir */
+            }
         }
     }
 
