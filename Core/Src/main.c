@@ -281,6 +281,8 @@ static uint8_t  mcp_step   = 0;   /* 0=ok 1=config 2=normal giremedi       */
 static uint8_t  mcp_eflg   = 0;   /* MCP hata bayraklari (bus tani)        */
 static uint8_t  mcp_tec    = 0;   /* MCP TX hata sayaci (bus tani)         */
 static uint8_t  mcp_rec    = 0;   /* MCP RX hata sayaci (bus tani)         */
+static volatile uint16_t mcp_busoff_cnt  = 0; /* TXBO kurtarma sayisi (TANI) */
+static volatile uint8_t  mcp_eflg_sticky = 0; /* gorulen TUM EFLG bitleri    */
 static volatile uint8_t mcp_int_flag = 0;      /* EXTI (MCP_INT) set eder   */
 static uint8_t  sarj_aktif = 0;   /* SARJ MODU: kontaktor cekili, motor gucu kesik */
 static uint32_t t_sarj_cikis = 0; /* fisten cekilme ani (acilis-benzeri bekletme icin) */
@@ -351,7 +353,8 @@ static void send_telemetri(void)
         /* ----- EMERSON YERLESIK SARJ (OBC) alanlari ----- */
         "\"sarj\":%u,\"obc\":%u,\"mcp\":%u,\"chgpct\":%u,"
         "\"ovout\":%u,\"oiout\":%u,\"ovin\":%u,\"otmp\":%d,\"orx\":%u,"
-        "\"orxall\":%u,\"eflg\":%u,\"tec\":%u,\"rec\":%u}\r\n",
+        "\"orxall\":%u,\"eflg\":%u,\"tec\":%u,\"rec\":%u,"
+        "\"boff\":%u,\"eflgs\":%u}\r\n",
         (unsigned int)pkt_id++,
         hiz_tam, hiz_ond, (unsigned int)kel_rpm,
         volt_tam, volt_ond, amp, pwm,
@@ -380,7 +383,8 @@ static void send_telemetri(void)
         (unsigned int)bms_soc,                       /* chgpct = sarj yuzdesi */
         (unsigned int)obc_vout_x10, (unsigned int)obc_iout_x10, (unsigned int)obc_vin_x10,
         (int)obc_temp, (unsigned int)obc_rx_cnt,
-        (unsigned int)obc_rx_all, (unsigned int)mcp_eflg, (unsigned int)mcp_tec, (unsigned int)mcp_rec);
+        (unsigned int)obc_rx_all, (unsigned int)mcp_eflg, (unsigned int)mcp_tec, (unsigned int)mcp_rec,
+        (unsigned int)mcp_busoff_cnt, (unsigned int)mcp_eflg_sticky);
 
     HAL_UART_Transmit(&TELEM_UART, (uint8_t*)buf, (uint16_t)len, 100);
 }
@@ -580,6 +584,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcanRx)
                               * Emerson ~2-3 sn'de bir yayinlar; pencere bunu ASMALI,
                               * yoksa DEBOUNCE_MS hicbir zaman KESINTISIZ dolamaz. */
 #define BMS_FULL_SOC       100U           /* bu SOC'da batarya DOLU sayilir */
+/* ===== R48_ChargeOff DEVRE DISI (23.08.2026) =====
+ * 0 = komut HIC gonderilmez (guvenli varsayilan), 1 = eski davranis.
+ * Gerekce: (a) payload byte duzeni canli capture ile DOGRULANMADI -
+ * fonksiyonun kendi yorumu da bunu soyluyor; (b) komutun geri alicisi
+ * YOK (R48_ChargeOn diye bir fonksiyon yok); (c) kullanilan ID
+ * 0x0607FF83, 57.4V ayarinin KALICI yazildigi ID ile AYNI -> yanlis
+ * byte duzeni kalici bir 0A limiti birakabilir. SOC zaten %100'e
+ * ulasmadigi icin su an bir islevi de yok. Capture ile dogrulaninca 1 yap. */
+#define R48_CHARGE_OFF_ENABLE 0
 /* ===== EMERSON VARLIK TESPITI: TX-ACK (TEC) =====
  * CANLI OLCUM (dogrulandi):
  *   TAKILI  -> yolladigimiz sorgular ACK'leniyor -> TEC DUSUK kalir (0..16 oynar)
@@ -783,6 +796,7 @@ static void MCP_ReadDiag(void)
     mcp_eflg = MCP_ReadReg(MCP_EFLG);
     mcp_tec  = MCP_ReadReg(MCP_TEC);
     mcp_rec  = MCP_ReadReg(MCP_REC);
+    mcp_eflg_sticky |= mcp_eflg;   /* anlik okuma kacirsa da bit kaybolmasin */
     if (mcp_eflg & 0xC0)                        /* RX0OVR/RX1OVR tasma -> temizle */
         MCP_BitModify(MCP_EFLG, 0xC0, 0x00);
 }
@@ -844,7 +858,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
  *   byte0=0x00 : gecici (EEPROM'a yazma)
  *   byte1=0x03 : "cikis akim limiti" seciciligi
  *   byte4..7   : deger = 0  -> 0 A */
-static void R48_ChargeOff(void)
+__attribute__((unused)) static void R48_ChargeOff(void)
 {
     can_frame_t f;
     f.id = R48_ID_CONTROL; f.extended = 1; f.dlc = 8;
@@ -927,9 +941,11 @@ static void Sarj_Kontrol(uint32_t now)
         }
     }
 
+#if R48_CHARGE_OFF_ENABLE
     /* Batarya doldu ama hala fise takiliysa Emerson'a sarji birak komutu */
     if (mcp_hazir && sarj_takili && batarya_dolu)
         R48_ChargeOff();
+#endif
 }
 /* USER CODE END 0 */
 
@@ -1296,6 +1312,7 @@ int main(void)
 
             if (mcp_eflg & 0x20)                    /* TXBO: bus-off -> kilitlenmesin */
             {
+                mcp_busoff_cnt++;                   /* TANI: kacinci bus-off */
                 mcp_hazir = MCP2515_Init();         /* yeniden baslat (kurtarma) */
                 mcp_rec = 0; mcp_tec = 0;           /* reset sonrasi sayaclar sifir */
                 t_mcp_reset = now;                  /* TEC yeniden oturana kadar bekle */
