@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdio.h>
+#include <math.h>   /* NTC beta denklemi icin logf() */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -196,6 +197,18 @@ static uint16_t gaz_adc      = 0;
 
 /* AKS (arac kontrol sistemi) - sinyal/far/silecek/kapi/stop (korna MANUEL, cikarildi) */
 static uint8_t  far_aktif    = 0;   /* far butonu aktif mi          */
+/* ===== KADRAN FAR GOSTERGESI TERS DUZELTMESI (31.08.2026) =====
+ * Sikayet: kadranda far ACIKken "kapali", KAPALIYKEN "acik" gorunuyordu.
+ * Far ROLESI/LAMBASI DOGRU calisiyor -> far_aktif DEGISTIRILMEDI, boylece
+ * role surusu aynen korunur. Yalnizca TELEMETRIYE giden deger cevrilir.
+ * Geri almak icin: 0 yap (baska degisiklik gerekmez).
+ * Lamba da ters calisiyorsa bu makro DEGIL, far_aktif okumasi duzeltilmeli. */
+#define FAR_TELEM_TERS  1
+#if FAR_TELEM_TERS
+  #define FAR_TELEM  ((unsigned int)(far_aktif ? 0u : 1u))
+#else
+  #define FAR_TELEM  ((unsigned int)far_aktif)
+#endif
 static uint8_t  sag_kapi     = 0;   /* sag kapi acik mi (switch)    */
 static uint8_t  sol_kapi     = 0;   /* sol kapi acik mi (switch)    */
 static uint8_t  sig_son_sel  = 0;   /* son secilen sinyal: 1=SOL 2=SAG */
@@ -209,16 +222,58 @@ static uint8_t  uyari_aktif   = 0;  /* UYARI rolesi (buzzer+flasor) durumu */
 /* ===== UYARI / ACIL DURUM ROLESI (tek pin: UYARI_ROLE, far gibi surulur) =====
  * Asagidaki sartlardan HERHANGI biri olusursa role cekilir (buzzer+flasor
  * donanimi kendi calisir). Her sarti 1/0 ile ac-kapa, esikleri ayarla. */
-#define UYARI_KELLY_KOPUK   1   /* motor surucu CAN kopuk */
-#define UYARI_KELLY_HATA    1   /* Kelly kontrolcu hata bildiriyor (kel_fault) */
-#define UYARI_BMS_KORUMA    1   /* BMS koruma/alarm bayragi aktif */
-#define UYARI_SICAKLIK      1   /* motor/kontrolcu asiri sicak */
-#define UYARI_DUSUK_SOC     1   /* kritik dusuk batarya */
-#define UYARI_BMS_KOPUK     0   /* BMS CAN kopuk (BMS her zaman takili degilse 0 birak) */
+/* KELLY-KOPUK ALARMI IPTAL (31.08.2026, istek uzerine): Kelly kapali/sokulu
+ * iken PD3 CEKMESIN. Tezgahta Kelly bilerek kapali tutuluyor ve buzzer
+ * surekli otuyordu. Silinmedi, yorumda tutuluyor.
+ * ACMAK ICIN: buradaki, esik satirlarindaki ve alarm blogundaki "//"
+ * isaretlerini kaldir.
+ * NOT: Kelly HATA (kel_fault) ve MOTOR/KONTROLCU SICAKLIK kosullari duruyor;
+ * ikisi de kelly_ok kapisinda oldugu icin Kelly kapaliyken zaten calmiyor. */
+//#define UYARI_KELLY_KOPUK   1   /* motor surucu CAN kopuk */
+//#define UYARI_KELLY_HATA    1   /* Kelly kontrolcu hata bildiriyor (kel_fault) */
+//#define UYARI_BMS_KORUMA    1   /* BMS koruma/alarm bayragi aktif */
+//#define UYARI_SICAKLIK      1   /* motor/kontrolcu asiri sicak */
+/* SOC ALARMI IPTAL (31.08.2026, istek uzerine): batarya yuzdesinin dusmesi
+ * PD3 otturme mantiginda YER ALMIYOR. Silinmedi, yorumda tutuluyor.
+ * ACMAK ICIN: buradaki ve alarm blogundaki "//" isaretlerini kaldir. */
+//#define UYARI_DUSUK_SOC     1   /* kritik dusuk batarya */
+#define UYARI_BMS_KOPUK     1   /* BMS CAN kopuk -> alarm (31.08.2026 ACILDI) */
+/* BMS-KOPUK ALARMI AYARLARI:
+ *  UYARI_BMS_KOPUK_MS : BMS bu kadar sure hic cerceve gondermezse KOPUK sayilir.
+ *    (bms_ok 3 sn ile dusuyor; alarm icin AYRI ve biraz daha uzun esik kullanilir
+ *     ki anlik bir kacik cerceve buzzer otturmesin.)
+ *  UYARI_BMS_ALARM_GECIKME_MS : ACILISTAN sonra bu sureden ONCE bu alarm CALMAZ.
+ *    Sebep: bms_last_tick 0'dan basliyor; gecikme olmadan BMS daha ilk cercevesini
+ *    gondermeden her acilista buzzer oterdi.
+ *  BMS bilerek sokulu calisilacaksa (tezgah testi) UYARI_BMS_KOPUK'u 0 yap. */
+#define UYARI_BMS_KOPUK_MS          5000U   /* BMS sessizlik esigi (alarm icin) */
+#define UYARI_BMS_ALARM_GECIKME_MS 15000U   /* acilis sonrasi susma (8->15 sn) */
+//#define UYARI_KELLY_ALARM_GECIKME_MS 15000U /* (Kelly-kopuk alarmi iptal) */
+/* ===== EK ALARM KOSULU (31.08.2026) =====
+ * Batarya sicakligi BMS'ten (0x356) zaten cozuluyor ve telemetriye gidiyordu
+ * ama PD3 alarmina bagli DEGILDI: mevcut UYARI_SICAKLIK yalnizca MOTOR ve
+ * KONTROLCU sicakligina (Kelly verisi) bakiyor. 0/1 ile kapatilabilir.
+ * NOT: Hucre gerilim uclari ve hucre dengesizligi bilerek EKLENMEDI -
+ * otturme mantigina girmemesi istendi. Hucre asiri/dusuk gerilimi zaten
+ * BMS kendi koruma bayragiyla bildiriyor (bkz. UYARI_BMS_KORUMA). */
+//#define UYARI_BMS_SICAKLIK   1   /* batarya asiri/dusuk sicaklik            */
+#define UYARI_BMS_SIC_MAX    550   /* 0.1C -> 55.0 C ustu alarm             */
+#define UYARI_BMS_SIC_MIN   -150   /* 0.1C -> -15.0 C alti alarm            */
+/* ---- ASAGISI BILEREK DEVRE DISI (31.08.2026, istek uzerine) ----
+ * Hucre gerilim uclari ve hucre dengesizligi PD3 otturme mantigina DAHIL
+ * EDILMEDI. Silinmedi, ileride gerekirse diye yorumda tutuluyor.
+ * ACMAK ICIN: asagidaki "//" isaretlerini kaldir (hem burayi hem alarm
+ * blogundaki karsilik gelen kismi). Hucre asiri/dusuk gerilimi zaten BMS
+ * kendi koruma bayragiyla bildiriyor -> UYARI_BMS_KORUMA onu yakaliyor. */
+//#define UYARI_HUCRE_GERILIM  1     /* hucre max/min gerilim ucu             */
+//#define UYARI_HUCRE_FARK     0     /* hucre dengesizligi                    */
+//#define UYARI_HUCRE_MAX_MV  3700U  /* 16S LFP: normal tepe 3650 mV (CVL 58.4V) */
+//#define UYARI_HUCRE_MIN_MV  2700U  /* LFP alt sinir civari                  */
+//#define UYARI_HUCRE_FARK_MV  300U  /* cmax-cmin bu degeri asarsa dengesizlik */
 #define UYARI_MOT_SIC_MAX   100 /* C - motor sicaklik esigi */
 #define UYARI_KTRL_SIC_MAX  80  /* C - kontrolcu sicaklik esigi */
-#define UYARI_SOC_MIN       10  /* % - dusuk batarya esigi */
-#define UYARI_KELLY_KOPUK_MS 5000U /* Kelly'den bu kadar sure veri gelmezse alarm (5 sn) */
+//#define UYARI_SOC_MIN       10  /* % - dusuk batarya esigi (SOC alarmi iptal) */
+//#define UYARI_KELLY_KOPUK_MS 5000U /* Kelly sessizlik esigi (alarm iptal) */
 /* ACILIS YUMUSATMA: ilk N ms girisler YOK SAYILIR, TUM roleler OFF tutulur.
  * Sebep: opto beslemesi otururken ters-okunan girisler (far/silecek) bir an
  * "aktif" gorunup TUM roleleri cektiriyordu; kontaktor de aninda cekince
@@ -228,15 +283,54 @@ static uint8_t  uyari_aktif   = 0;  /* UYARI rolesi (buzzer+flasor) durumu */
  * ACILISTAKI GIBI bu kadar sure tum roleler OFF bekletilir (optolar/sistem
  * otursun), sonra normal calismaya gecilir. */
 #define SARJ_CIKIS_GRACE_MS 1000U
-/* KONTAKTOR SARJ-SONRASI BEKLEME:
- * Gozlem: fisten cekilince kontaktor + isiklar cekiyor, ~0.5-1 sn sonra BMS
- * koruma atiyor. Sebep: sarj yeni bittigi icin BMS DESARJ iznini henuz
- * acmamis oluyor; Kelly baglaninca "izinsiz desarj" koruma atiyor.
- * Cozum: kontaktor fis cekildikten sonra EN AZ su kadar bekler VE BMS'in
- * desarj izni bayragini (0x35C bit6) bekler; izin gelmezse emniyet suresinde
- * yine de ceker (arac kilitli kalmasin). */
+/* ===== KONTAKTOR SARJ-SONRASI GUVENLI BIRAKMA (23.08.2026 AKTIF EDILDI) =====
+ * SORUN (fisten cekince batarya/STM arizaya dusuyor):
+ *   Eski akista obc_link 1->0 oldugu AN kontaktor birakiliyordu. O anda:
+ *   a) Sarj boyunca beslemesiz kalan Kelly'nin DC kondansatorleri BOSALMIS;
+ *      kontak kapaninca ani dolus (inrush) akimi cekiyor.
+ *   b) BMS sarjdan yeni ciktigi icin DESARJ iznini (0x35C bit6) henuz
+ *      acmamis ve/veya koruma bayraklari hala aktif -> "izinsiz desarj"
+ *      gorup KORUMAYA giriyor (gozlem: birakmadan ~0.5-1 sn sonra ariza).
+ *   c) Gecisin yarattigi besleme cokusu/EMI STM32'yi dondurabiliyor.
+ * COZUM (asagidaki durum makinesi, Sarj_Kontrol icinde):
+ *   Fis cekildi haberi gelince kontaktor HEMEN BIRAKILMAZ (cekili kalir,
+ *   batarya tarafinda hicbir yuk degisimi olmaz). Su sartlar saglaninca
+ *   birakilir:
+ *     - fis cekileli EN AZ KONTAKTOR_SARJ_BEKLE_MS gecti, VE
+ *     - BMS desarj izni verdi (0x35C bit6) VE koruma bayraklari temiz;
+ *   izin hic gelmezse KONTAKTOR_ZORLA_MS sonunda YINE DE birakilir
+ *   (arac fiste kilitli kalmasin). NOT: Bu tanimlar eskiden beri vardi
+ *   ama KULLANILMIYORDU; simdi gercekten kullaniliyor. */
 #define KONTAKTOR_SARJ_BEKLE_MS  5000U   /* fis cekildikten sonra minimum bekleme  */
-#define KONTAKTOR_ZORLA_MS      15000U   /* izin gelmese de en gec bu surede cek   */
+#define KONTAKTOR_ZORLA_MS      15000U   /* izin gelmese de en gec bu surede birak */
+/* ===== ON-KOSULLAMA (PRE-CHARGE) DESTEGI - KESIN INRUSH COZUMU =====
+ * Dokumandaki plan: kontaktorun SURUS kontagina PARALEL ~100R/10W direnc +
+ * bos role kanali (onerilen pin PC2, degistirilebilir). Sekans (otomatik):
+ *   fis cekildi -> precharge rolesi KAPANIR -> Kelly kondansatorleri direnc
+ *   uzerinden yavasca dolar (inrush YOK) -> bekleme bitince kontaktor
+ *   birakilir (kontak esitlenmis gerilimde kapanir) -> kisa sure sonra
+ *   precharge rolesi ACILIR.
+ * DIKKAT: Direnc + role DONANIMA BAGLANMADAN 1 YAPMA! 0 iken kod PC2'ye
+ * hic dokunmaz, davranis degismez. Role ayni aktif-LOW kart uzerindeyse
+ * ekstra ayar gerekmez (ROLE_ON/OFF makrolari kullanilir). */
+#ifndef PRECHARGE_ENABLE
+#define PRECHARGE_ENABLE        0
+#endif
+#define PRECHARGE_ROLE_GPIO_Port GPIOC
+#define PRECHARGE_ROLE_Pin       GPIO_PIN_2
+#define PRECHARGE_MS            3000U    /* direncle kondansator doldurma suresi   */
+#define PRECHARGE_KAPAT_MS       500U    /* kontaktor biraktiktan sonra precharge
+                                          * rolesinin acilmasina kadar ortusme     */
+/* ===== BAGIMSIZ WATCHDOG (IWDG) =====
+ * Kontaktor gecisi/EMI STM32'yi dondururse sistem elle reset bekliyordu
+ * ("STM arizaya atti" gorunumu). IWDG acikken donma en gec ~4 sn'de
+ * otomatik resetle toparlanir; acilis zaten guvenli (tum roleler birakik).
+ * Ana dongu her turda besler; dongu 4 sn kilitlenmedikce reset OLMAZ.
+ * ST-Link ile adim adim DEBUG yapilacaksa 0 yapmak istenebilir (kod ayrica
+ * debug'da sayaci donduran DBGMCU ayarini da yapiyor, o yuzden 1 kalabilir). */
+#ifndef WATCHDOG_ENABLE
+#define WATCHDOG_ENABLE         1
+#endif
 /* SARJ SONRASI ALARM SUSTURMA (log kaniti 04:53:28): fis cekilince 1 sn'de
  * 'Kelly kopuk' alarmi patliyordu — oysa kontaktor 5 sn bekliyor, Kelly ondan
  * sonra acilip CAN'e basliyor. Buzzer+flasorun ani yuku girisleri (far/silecek/
@@ -253,6 +347,84 @@ static uint8_t  uyari_aktif   = 0;  /* UYARI rolesi (buzzer+flasor) durumu */
  * Alarm var -> ceker (buzzer+flasor calisir), alarm yok -> birakik. */
 #define UYARI_ON   ROLE_ON
 #define UYARI_OFF  ROLE_OFF
+
+/* ===================================================================
+ *  HARICI SICAKLIK SENSORU (2 bacakli NTC)  ->  ADC1
+ *
+ *  DEVRE:   3.3V --[ NTC_SERI_R ]--+-- ADC pini (PB0)
+ *                                  |
+ *                                [NTC]
+ *                                  |
+ *                                 GND
+ *
+ *  !!! SERI DIRENC SART !!!  Sensor dogrudan 3.3V ile GND arasina
+ *  baglanirsa gerilim bolucu olusmaz, ADC her sicaklikta ~4095 okur.
+ *  Direnc takili degilken kod bunu GECERSIZ sayar ve hicbir role
+ *  tetiklenmez (asagidaki NTC_ADC_MIN/MAX koruma penceresi).
+ *
+ *  Sicaklik ARTINCA NTC direnci DUSER -> pin gerilimi DUSER -> ADC DUSER.
+ * =================================================================== */
+#define NTC_ADC_KANAL     ADC_CHANNEL_8   /* PB0 = ADC1_IN8 (bos pin secildi) */
+#define NTC_ADC_Pin       GPIO_PIN_0
+#define NTC_ADC_Port      GPIOB
+#define NTC_SERI_R        10000UL  /* 3.3V ile pin arasindaki SERI direnc [ohm] */
+#define NTC_R25           10000UL  /* NTC 25 C direnci [ohm]                    */
+/* EKRAN/ESIK KAYDIRMA: olculen sicakliga sabit bir deger EKLENIR.
+ * Gozlem: kadran 16-17 C gosterirken gercek hava 30-35 C idi.
+ * +15.0 C ekleyince 16-17 -> 31-32 C olur.
+ * Tek sayi: 0.1 C biriminde. Daha fazla/az istenirse burasi degistirilir.
+ * Hem kadran verisine hem 50/60 C esiklerine ayni deger uygulanir. */
+#define NTC_OFFSET_X10       150   /* 0.1 C -> +15.0 C kaydirma */
+#define NTC_BETA          3950.0f  /* NTC beta katsayisi (3435 / 3977 olabilir) */
+/* GECERLILIK PENCERESI - disina cikan okuma KABLO HATASI sayilir:
+ *   ADC ~4095 -> seri direnc yok veya NTC kopuk
+ *   ADC ~0    -> pin GND tarafina kisa (bu COK SICAK gibi gorunurdu!)
+ * Ikisi de role tetiklemez. 120..4040 penceresi kabaca -50..+130 C. */
+#define NTC_ADC_MIN       120U
+#define NTC_ADC_MAX       4040U
+#define NTC_GECERSIZ      (-990)   /* 0.1C -> kadranda -99.0 C = sensor yok/hatali */
+/* ESIKLER (0.1 C) + HISTEREZIS (esikte titremesin) */
+#define NTC_UYARI_X10        500   /* 50.0 C -> PD3 buzzer + flasor CEKER  */
+#define NTC_UYARI_BIRAK_X10  480   /* 48.0 C -> uyari BIRAKIR              */
+#define NTC_KONT_X10         600   /* 60.0 C -> PD5 kontaktor CEKER        */
+#define NTC_KONT_BIRAK_X10   550   /* 55.0 C -> kontaktor kilidi KALKAR    */
+#define UYARI_NTC_SICAKLIK     1   /* 50 C uyarisi acik(1) / kapali(0)     */
+
+static volatile uint16_t ntc_adc     = 0;            /* ham ADC (kalibrasyon icin) */
+static volatile int16_t  ntc_sic_x10 = NTC_GECERSIZ; /* 0.1 C                      */
+static volatile uint8_t  ntc_gecerli = 0;            /* okuma saglikli mi          */
+static volatile uint8_t  ntc_uyari   = 0;            /* >=50 C (histerezisli)      */
+static volatile uint8_t  ntc_kilit   = 0;            /* >=60 C kontaktor kilidi    */
+
+/* Tek kanal ADC okuma: kanal her cagride yeniden ayarlanir, boylece gaz
+ * pedali ve NTC ayni ADC1 uzerinden SIRAYLA okunur (scan/DMA gerekmez).
+ * NTC yuksek empedansli oldugu icin gaz pedalindan UZUN ornekleme ister. */
+static uint16_t ADC_Oku(uint32_t kanal, uint32_t ornekleme)
+{
+    ADC_ChannelConfTypeDef c = {0};
+    c.Channel      = kanal;
+    c.Rank         = 1;
+    c.SamplingTime = ornekleme;
+    if (HAL_ADC_ConfigChannel(&hadc1, &c) != HAL_OK) return 0xFFFFu;
+    uint16_t v = 0xFFFFu;
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 5) == HAL_OK)
+        v = (uint16_t)HAL_ADC_GetValue(&hadc1);
+    HAL_ADC_Stop(&hadc1);
+    return v;
+}
+
+/* ADC -> 0.1 C (beta denklemi). Gecersizse NTC_GECERSIZ doner.
+ *   R_ntc = R_seri * adc / (4095 - adc)
+ *   1/T   = 1/298.15 + ln(R/R25)/BETA        (T Kelvin) */
+static int16_t NTC_Cevir(uint16_t adc)
+{
+    if (adc < NTC_ADC_MIN || adc > NTC_ADC_MAX) return NTC_GECERSIZ;
+    float r = (float)NTC_SERI_R * (float)adc / (float)(4095u - adc);
+    float t = 1.0f / (1.0f/298.15f + logf(r / (float)NTC_R25) / NTC_BETA) - 273.15f;
+    if (t < -99.0f || t > 200.0f) return NTC_GECERSIZ;
+    return (int16_t)(t * 10.0f + (t >= 0.0f ? 0.5f : -0.5f)) + NTC_OFFSET_X10;
+}
 
 /* Zamanlayicilar */
 static uint32_t t_tel   = 0;
@@ -281,9 +453,26 @@ static uint8_t  mcp_step   = 0;   /* 0=ok 1=config 2=normal giremedi       */
 static uint8_t  mcp_eflg   = 0;   /* MCP hata bayraklari (bus tani)        */
 static uint8_t  mcp_tec    = 0;   /* MCP TX hata sayaci (bus tani)         */
 static uint8_t  mcp_rec    = 0;   /* MCP RX hata sayaci (bus tani)         */
+static volatile uint16_t mcp_busoff_cnt  = 0; /* TXBO kurtarma sayisi (TANI) */
+static volatile uint8_t  mcp_eflg_sticky = 0; /* gorulen TUM EFLG bitleri    */
 static volatile uint8_t mcp_int_flag = 0;      /* EXTI (MCP_INT) set eder   */
 static uint8_t  sarj_aktif = 0;   /* SARJ MODU: kontaktor cekili, motor gucu kesik */
-static uint32_t t_sarj_cikis = 0; /* fisten cekilme ani (acilis-benzeri bekletme icin) */
+static uint32_t t_sarj_cikis = 0; /* kontaktorun GERCEKTEN birakildigi an (grace/alarm
+                                   * pencereleri bu andan baslar; fis cekilme aninda
+                                   * DEGIL - guvenli birakma sekansi araya girer) */
+/* Kontaktor durum makinesi (sarjdan GUVENLI cikis):
+ *   0 = SURUS       : kontaktor birakik (surus tarafi), normal calisma
+ *   1 = SARJ        : kontaktor cekili (sarj tarafi), motor kesik
+ *   2 = CIKIS_BEKLE : fis cekildi ama kontaktor HALA cekili; BMS desarj izni
+ *                     + minimum sure (+ varsa precharge) bekleniyor
+ *   3 = PRECHARGE_KAPAT : kontaktor birakildi; precharge rolesi kisa ortusme
+ *                     suresi sonra acilacak (yalniz PRECHARGE_ENABLE=1'de) */
+#define KONT_SURUS        0u
+#define KONT_SARJ         1u
+#define KONT_CIKIS_BEKLE  2u
+#define KONT_PRE_KAPAT    3u
+static uint8_t  kont_durum   = KONT_SURUS;
+static uint32_t t_kont_cikis = 0;  /* fis cekildi haberinin geldigi an (obc_link 1->0) */
 
 /* CAN filtre + start + RX0 kesmesi. Hata olsa da sistem DURMAZ:
  * Pi'ye USART1 telemetrisi her kosulda akar. */
@@ -314,14 +503,15 @@ static void Kelly_CAN_Baslat(void)
 }
 
 /* Telemetri JSON'u USART1'den Pi'ye. Format F103 ile AYNI -> Python degismez.
- * HIZ HESABI:  km/h = rpm * (disli 18/31) * (teker CEVRESI) * 60/1000
+ * HIZ HESABI:  km/h = rpm * (disli 12/31) * (teker CEVRESI) * 60/1000
  *   Teker cevresi = PI * cap = 3.1416 * 0.55m = 1.728 m
- *   DISLI ORANI 12/31 -> 18/31 GUNCELLENDI (mekanik degisiklik).
- *   km/h x10 katsayisi = (18/31)*1.728*60/1000*10 = 0.6020  ->  rpm * 933/1550
- *   KALIBRASYON: gercek hizla fark olursa 933'u ayarla (buyut = hiz artar). */
+ *   DISLI ORANI 12/31 (01.09.2026 tekrar 12/31 yapildi).
+ *   km/h x10 katsayisi = (12/31)*1.728*60/1000*10 = 0.4013  ->  rpm * 622/1550
+ *   (18/31'e donulecek olursa: 622 -> 933, payda 1550 AYNI kalir.)
+ *   KALIBRASYON: gercek hizla fark olursa 622'yi ayarla (buyut = hiz artar). */
 static void send_telemetri(void)
 {
-    uint32_t hiz_x10 = (uint32_t)kel_rpm * 933UL / 1550UL;
+    uint32_t hiz_x10 = (uint32_t)kel_rpm * 622UL / 1550UL;
     unsigned int hiz_tam = (unsigned int)(hiz_x10 / 10U);
     unsigned int hiz_ond = (unsigned int)(hiz_x10 % 10U);
     unsigned int volt_tam = (unsigned int)(kel_volt_x10 / 10U);
@@ -329,7 +519,7 @@ static void send_telemetri(void)
     int amp = (int)kel_cur / KELLY_AKIM_BOL;   /* ISARETLI Amper (regen'de negatif) */
     unsigned int pwm = (unsigned int)((kel_throttle * 100U) / 255U);
 
-    char buf[1200];
+    char buf[1600];   /* en kotu durum ~1251 bayt (sayaclar buyuyunce) */
     int  len = snprintf(buf, sizeof(buf),
         "{\"id\":%u,\"spd\":%u.%u,\"rpm\":%u,"
         "\"volt\":%u.%u,\"amp\":%d,\"pwm\":%u,\"bamp\":0,"
@@ -351,7 +541,8 @@ static void send_telemetri(void)
         /* ----- EMERSON YERLESIK SARJ (OBC) alanlari ----- */
         "\"sarj\":%u,\"obc\":%u,\"mcp\":%u,\"chgpct\":%u,"
         "\"ovout\":%u,\"oiout\":%u,\"ovin\":%u,\"otmp\":%d,\"orx\":%u,"
-        "\"orxall\":%u,\"eflg\":%u,\"tec\":%u,\"rec\":%u}\r\n",
+        "\"orxall\":%u,\"eflg\":%u,\"tec\":%u,\"rec\":%u,"
+        "\"boff\":%u,\"eflgs\":%u,\"konts\":%u}\r\n",
         (unsigned int)pkt_id++,
         hiz_tam, hiz_ond, (unsigned int)kel_rpm,
         volt_tam, volt_ond, amp, pwm,
@@ -362,12 +553,12 @@ static void send_telemetri(void)
         (unsigned int)can_step, (unsigned int)can_state, (unsigned int)can_err,
         (unsigned int)mcu_devid, (unsigned int)can_clk,
         (unsigned int)kel_msg1_cnt, (unsigned int)kel_msg2_cnt, (unsigned int)kel_fault,
-        (unsigned int)far_aktif, (unsigned int)sag_kapi,
+        FAR_TELEM, (unsigned int)sag_kapi,   /* far: kadran icin ters (bkz. FAR_TELEM_TERS) */
         (unsigned int)sol_kapi, (unsigned int)led_sol, (unsigned int)led_sag,
         (unsigned int)silecek_aktif, (unsigned int)uyari_aktif,
         /* ----- BMS degerleri ----- */
         (unsigned int)bms_soc, (unsigned int)bms_soh, (unsigned int)bms_volt_x100,
-        (int)bms_cur_x10, (int)bms_temp_x10,
+        (int)bms_cur_x10, (int)ntc_sic_x10,   /* btmp = HARICI NTC (BMS sicakligi yerine) */
         (unsigned int)bms_cvl_x10, (int)bms_ccl_x10, (int)bms_dcl_x10, (unsigned int)bms_dvl_x10,
         (unsigned int)bms_cmax_mv, (unsigned int)bms_cmin_mv, (unsigned int)bms_chg_flags,
         (unsigned int)bms_rem_ah_x10, (unsigned int)bms_full_ah_x10,
@@ -380,7 +571,9 @@ static void send_telemetri(void)
         (unsigned int)bms_soc,                       /* chgpct = sarj yuzdesi */
         (unsigned int)obc_vout_x10, (unsigned int)obc_iout_x10, (unsigned int)obc_vin_x10,
         (int)obc_temp, (unsigned int)obc_rx_cnt,
-        (unsigned int)obc_rx_all, (unsigned int)mcp_eflg, (unsigned int)mcp_tec, (unsigned int)mcp_rec);
+        (unsigned int)obc_rx_all, (unsigned int)mcp_eflg, (unsigned int)mcp_tec, (unsigned int)mcp_rec,
+        (unsigned int)mcp_busoff_cnt, (unsigned int)mcp_eflg_sticky,
+        (unsigned int)kont_durum);   /* konts: 0=surus 1=sarj 2=cikis-bekle 3=pre-kapat */
 
     HAL_UART_Transmit(&TELEM_UART, (uint8_t*)buf, (uint16_t)len, 100);
 }
@@ -580,6 +773,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcanRx)
                               * Emerson ~2-3 sn'de bir yayinlar; pencere bunu ASMALI,
                               * yoksa DEBOUNCE_MS hicbir zaman KESINTISIZ dolamaz. */
 #define BMS_FULL_SOC       100U           /* bu SOC'da batarya DOLU sayilir */
+/* ===== R48_ChargeOff DEVRE DISI (23.08.2026) =====
+ * 0 = komut HIC gonderilmez (guvenli varsayilan), 1 = eski davranis.
+ * Gerekce: (a) payload byte duzeni canli capture ile DOGRULANMADI -
+ * fonksiyonun kendi yorumu da bunu soyluyor; (b) komutun geri alicisi
+ * YOK (R48_ChargeOn diye bir fonksiyon yok); (c) kullanilan ID
+ * 0x0607FF83, 57.4V ayarinin KALICI yazildigi ID ile AYNI -> yanlis
+ * byte duzeni kalici bir 0A limiti birakabilir. SOC zaten %100'e
+ * ulasmadigi icin su an bir islevi de yok. Capture ile dogrulaninca 1 yap. */
+#define R48_CHARGE_OFF_ENABLE 0
 /* ===== EMERSON VARLIK TESPITI: TX-ACK (TEC) =====
  * CANLI OLCUM (dogrulandi):
  *   TAKILI  -> yolladigimiz sorgular ACK'leniyor -> TEC DUSUK kalir (0..16 oynar)
@@ -783,6 +985,7 @@ static void MCP_ReadDiag(void)
     mcp_eflg = MCP_ReadReg(MCP_EFLG);
     mcp_tec  = MCP_ReadReg(MCP_TEC);
     mcp_rec  = MCP_ReadReg(MCP_REC);
+    mcp_eflg_sticky |= mcp_eflg;   /* anlik okuma kacirsa da bit kaybolmasin */
     if (mcp_eflg & 0xC0)                        /* RX0OVR/RX1OVR tasma -> temizle */
         MCP_BitModify(MCP_EFLG, 0xC0, 0x00);
 }
@@ -844,7 +1047,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
  *   byte0=0x00 : gecici (EEPROM'a yazma)
  *   byte1=0x03 : "cikis akim limiti" seciciligi
  *   byte4..7   : deger = 0  -> 0 A */
-static void R48_ChargeOff(void)
+__attribute__((unused)) static void R48_ChargeOff(void)
 {
     can_frame_t f;
     f.id = R48_ID_CONTROL; f.extended = 1; f.dlc = 8;
@@ -886,7 +1089,10 @@ static void Sarj_Kontrol(uint32_t now)
         else
         {
             t_var = 0;
-            if (obc_link) { obc_link = 0; t_sarj_cikis = now; } /* Kural 2 doldu -> BIRAK */
+            if (obc_link) obc_link = 0;  /* Kural 2 doldu -> fis cekildi kabul edilir.
+                                          * t_sarj_cikis BURADA set edilmez: kontaktoru
+                                          * asagidaki durum makinesi GUVENLI sartlar
+                                          * saglaninca birakir ve o an set eder. */
         }
         obc_streak = 0;   /* (kullanilmiyor; ID/frame filtresi kaldirildi) */
     }
@@ -909,27 +1115,112 @@ static void Sarj_Kontrol(uint32_t now)
         obc_iout_x10 = (uint16_t)ci;                       /* 0.1A (mutlak) */
     }
 
-    /* Kontaktor rolesi (PD5) - KENAR TETIKLI, her gecis BIR KEZ yazilir:
-     *   Emerson verisi KESINTISIZ DEBOUNCE_MS gelince (obc_link 0->1) -> CEKER
-     *       (isik yanar, sistem/motor kesilir).
-     *   Emerson verisi HOLDOFF_MS boyunca gelmeyince (obc_link 1->0) -> BIRAKIR
-     *       (acilistaki haline doner: HIGH, birakik, isik sonuk).
-     * Aradaki turlarda pine HIC dokunulmaz -> titreme/tekrar yazma olmaz.
-     * Kart aktif-LOW: ROLE_ON=LOW=ceker. obc_link'e Sarj_Kontrol'deki debounce
-     * (Kural 1) + hold-off (Kural 2) karar verir -> anlik kopmalar filtrelenir. */
+    /* ===== KONTAKTOR DURUM MAKINESI (PD5) - SARJDAN GUVENLI CIKIS =====
+     * CEKME eskisi gibi tek kenarli: obc_link 0->1 olunca BIR KEZ ceker
+     * (sarj tarafi, motor kesik). BIRAKMA artik ANINDA DEGIL:
+     * fis cekildi haberi (obc_link 1->0) gelince kontaktor CEKILI KALIR
+     * (batarya tarafinda hicbir yuk degisimi olmaz) ve su sartlar
+     * saglaninca BIR KEZ birakilir:
+     *   - fis cekileli en az KONTAKTOR_SARJ_BEKLE_MS gecti, VE
+     *   - BMS desarj izni verdi (0x35C d0 bit6) VE koruma bayraklari temiz;
+     *   - izin hic gelmezse (veya BMS hatti kopuksa) KONTAKTOR_ZORLA_MS
+     *     sonunda emniyet olarak YINE DE birakilir (arac kilitli kalmasin).
+     * PRECHARGE_ENABLE=1 ise: bekleme boyunca precharge rolesi kapali tutulur
+     * (Kelly kondansatorleri direncten dolar, inrush yok); kontaktor
+     * birakildiktan PRECHARGE_KAPAT_MS sonra precharge rolesi acilir.
+     * t_sarj_cikis GERCEK birakma aninda set edilir -> SARJ_CIKIS_GRACE_MS
+     * role bekletmesi ve SARJ_SONRASI_ALARM_SUSKUN_MS alarm susturmasi
+     * dogru andan baslar. Beklerken fis geri takilirsa sekans iptal olur,
+     * kontaktore dokunulmadan SARJ durumuna donulur. */
+    switch (kont_durum)
     {
-        static uint8_t kont_onceki = 0;   /* acilis hali = birakik (0) */
-        if (obc_link != kont_onceki)
+    case KONT_SURUS:
+        if (obc_link)
         {
-            HAL_GPIO_WritePin(KONTAKTOR_ROLE_GPIO_Port, KONTAKTOR_ROLE_Pin,
-                              obc_link ? ROLE_ON : ROLE_OFF);
-            kont_onceki = obc_link;
+            HAL_GPIO_WritePin(KONTAKTOR_ROLE_GPIO_Port, KONTAKTOR_ROLE_Pin, ROLE_ON);
+            kont_durum = KONT_SARJ;                /* sarj tarafina gecti */
         }
+        break;
+
+    case KONT_SARJ:
+        if (!obc_link)
+        {
+            t_kont_cikis = now;                    /* fis cekildi; kontaktor CEKILI kalir */
+#if PRECHARGE_ENABLE
+            HAL_GPIO_WritePin(PRECHARGE_ROLE_GPIO_Port, PRECHARGE_ROLE_Pin, ROLE_ON);
+#endif
+            kont_durum = KONT_CIKIS_BEKLE;
+        }
+        break;
+
+    case KONT_CIKIS_BEKLE:
+        if (obc_link)                              /* fis geri takildi -> sarja devam */
+        {
+#if PRECHARGE_ENABLE
+            HAL_GPIO_WritePin(PRECHARGE_ROLE_GPIO_Port, PRECHARGE_ROLE_Pin, ROLE_OFF);
+#endif
+            kont_durum = KONT_SARJ;                /* kontaktor zaten cekili, dokunulmaz */
+        }
+        else
+        {
+            uint8_t sure_doldu = ((now - t_kont_cikis) >= KONTAKTOR_SARJ_BEKLE_MS) ? 1u : 0u;
+#if PRECHARGE_ENABLE
+            if ((now - t_kont_cikis) < PRECHARGE_MS) sure_doldu = 0u; /* direncle dolum bitsin */
+#endif
+            /* BMS izni: veri taze + desarj izni (0x35C d0 bit6) + koruma bayragi yok.
+             * (Alarm bayraklari sadece UYARIDIR, birakmayi engellemez.) */
+            uint8_t bms_izin = (bms_ok &&
+                                ((bms_chg_flags & 0x40u) != 0u) &&
+                                ((bms_prot0 | bms_prot1) == 0u)) ? 1u : 0u;
+            uint8_t zorla = ((now - t_kont_cikis) >= KONTAKTOR_ZORLA_MS) ? 1u : 0u;
+
+            if ((sure_doldu && bms_izin) || zorla)
+            {
+                HAL_GPIO_WritePin(KONTAKTOR_ROLE_GPIO_Port, KONTAKTOR_ROLE_Pin, ROLE_OFF);
+                t_sarj_cikis = now;                /* grace + alarm pencereleri SIMDI baslar */
+#if PRECHARGE_ENABLE
+                kont_durum = KONT_PRE_KAPAT;       /* kisa ortusme, sonra precharge ac */
+#else
+                kont_durum = KONT_SURUS;
+#endif
+            }
+        }
+        break;
+
+    case KONT_PRE_KAPAT:
+    default:
+#if PRECHARGE_ENABLE
+        if ((now - t_sarj_cikis) >= PRECHARGE_KAPAT_MS)
+        {
+            HAL_GPIO_WritePin(PRECHARGE_ROLE_GPIO_Port, PRECHARGE_ROLE_Pin, ROLE_OFF);
+            kont_durum = KONT_SURUS;
+        }
+#else
+        kont_durum = KONT_SURUS;                   /* bu duruma normalde gelinmez */
+#endif
+        break;
     }
 
+    /* ===== ASIRI SICAKLIK KONTAKTOR KILIDI (harici NTC) =====
+     * ntc_sic >= 60 C olunca PD5 CEKER, 55 C altina inene kadar CEKILI KALIR.
+     * Durum makinesinin UZERINE yazar (guvenlik onceligi): kilitliyken her
+     * turda ROLE_ON zorlanir, boylece sarj sekansi araya girip birakamaz.
+     * Kilit kalkinca PD5, kont_durum degiskeninin istedigi seviyeye doner. */
+    {
+        static uint8_t ntc_kilit_onceki = 0;
+        if (ntc_kilit)
+            HAL_GPIO_WritePin(KONTAKTOR_ROLE_GPIO_Port, KONTAKTOR_ROLE_Pin, ROLE_ON);
+        else if (ntc_kilit_onceki)
+            HAL_GPIO_WritePin(KONTAKTOR_ROLE_GPIO_Port, KONTAKTOR_ROLE_Pin,
+                              (kont_durum == KONT_SURUS) ? ROLE_OFF : ROLE_ON);
+        ntc_kilit_onceki = ntc_kilit;
+    }
+
+#if R48_CHARGE_OFF_ENABLE
     /* Batarya doldu ama hala fise takiliysa Emerson'a sarji birak komutu */
     if (mcp_hazir && sarj_takili && batarya_dolu)
         R48_ChargeOff();
+#endif
 }
 /* USER CODE END 0 */
 
@@ -952,7 +1243,11 @@ int main(void)
     g.Speed = GPIO_SPEED_FREQ_LOW;
 
     /* 1) Seviyeyi register'dan garanti et: BSRR alt-16 = set(HIGH) = BIRAKIK */
-    GPIOC->BSRR = (uint32_t)(SAG_ROLE_Pin | SOL_ROLE_Pin | SILECEK_ROLE_Pin);              /* HIGH */
+    GPIOC->BSRR = (uint32_t)(SAG_ROLE_Pin | SOL_ROLE_Pin | SILECEK_ROLE_Pin)               /* HIGH */
+#if PRECHARGE_ENABLE
+                | (uint32_t)PRECHARGE_ROLE_Pin                                             /* HIGH */
+#endif
+                ;
     GPIOD->BSRR = (uint32_t)(FAR_ROLE_Pin | KONTAKTOR_ROLE_Pin | STOP_ROLE_Pin)            /* HIGH */
 #if defined(UYARI_ROLE_Pin)
                 | (uint32_t)UYARI_ROLE_Pin                                                  /* HIGH */
@@ -961,7 +1256,11 @@ int main(void)
 
     /* 2) Output + ic PULL-UP (tum role pinleri ayni: HIGH = birakik) */
     g.Pull = GPIO_PULLUP;
-    g.Pin  = SAG_ROLE_Pin | SOL_ROLE_Pin | SILECEK_ROLE_Pin;
+    g.Pin  = SAG_ROLE_Pin | SOL_ROLE_Pin | SILECEK_ROLE_Pin
+#if PRECHARGE_ENABLE
+           | PRECHARGE_ROLE_Pin
+#endif
+           ;
     HAL_GPIO_Init(GPIOC, &g);
     g.Pin  = FAR_ROLE_Pin | KONTAKTOR_ROLE_Pin | STOP_ROLE_Pin
 #if defined(UYARI_ROLE_Pin)
@@ -1026,6 +1325,17 @@ int main(void)
             ;                                                    HAL_GPIO_Init(GPIOD, &gp);
   }
 
+  /* Harici NTC: ADC pinini ANALOG moda al. CubeMX icinde TANIMLI DEGIL,
+   * bilerek burada kuruluyor -> .ioc yeniden uretilse bile silinmez. */
+  {
+    GPIO_InitTypeDef ntc = {0};
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    ntc.Pin  = NTC_ADC_Pin;
+    ntc.Mode = GPIO_MODE_ANALOG;
+    ntc.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(NTC_ADC_Port, &ntc);
+  }
+
   /* Gaz PWM cikisini baslat, %0'da tut (guvenli). */
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
   __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0);
@@ -1054,6 +1364,35 @@ int main(void)
    * GERI ALMAK: bu satiri sil (INT tekrar aktif olur). */
   HAL_NVIC_DisableIRQ(EXTI0_IRQn);
 
+#if PRECHARGE_ENABLE
+  /* On-kosullama (precharge) rolesi cikisi (ayni aktif-LOW kart: OFF=HIGH).
+   * Once seviye garanti edilir, sonra output yapilir -> acilista cekmez. */
+  HAL_GPIO_WritePin(PRECHARGE_ROLE_GPIO_Port, PRECHARGE_ROLE_Pin, ROLE_OFF);
+  {
+    GPIO_InitTypeDef gpre = {0};
+    gpre.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpre.Pull  = GPIO_PULLUP;
+    gpre.Speed = GPIO_SPEED_FREQ_LOW;
+    gpre.Pin   = PRECHARGE_ROLE_Pin;
+    HAL_GPIO_Init(PRECHARGE_ROLE_GPIO_Port, &gpre);
+  }
+  HAL_GPIO_WritePin(PRECHARGE_ROLE_GPIO_Port, PRECHARGE_ROLE_Pin, ROLE_OFF);
+#endif
+
+#if WATCHDOG_ENABLE
+  /* Bagimsiz watchdog (IWDG): LSI ~32 kHz / 64 = 500 Hz, reload 2000 -> ~4 sn.
+   * Ana dongu her turda besler. Kontaktor gecisi/EMI kodu kilitleyip
+   * "STM arizaya atti" durumu olusturursa en gec 4 sn'de TEMIZ reset atilir;
+   * acilis zaten guvenli (tum roleler birakik, BOOT_GRACE devrede).
+   * Debug'da core durunca sayac da dursun diye DBGMCU freeze biti set edilir. */
+  DBGMCU->APB1FZ |= DBGMCU_APB1_FZ_DBG_IWDG_STOP;
+  IWDG->KR  = 0xCCCCU;   /* IWDG'yi baslat                  */
+  IWDG->KR  = 0x5555U;   /* PR/RLR yazma erisimini ac       */
+  IWDG->PR  = 4U;        /* prescaler 64                    */
+  IWDG->RLR = 2000U;     /* 2000 / 500 Hz = ~4 sn zaman asimi */
+  IWDG->KR  = 0xAAAAU;   /* sayaci yukle (ilk besleme)      */
+#endif
+
   t_tel   = HAL_GetTick();
   t_buton = HAL_GetTick();
   t_raw   = HAL_GetTick();
@@ -1068,6 +1407,10 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     uint32_t now = HAL_GetTick();
+
+#if WATCHDOG_ENABLE
+    IWDG->KR = 0xAAAAU;   /* watchdog besle: dongu canli oldugu surece reset olmaz */
+#endif
 
     /* ── Sinyal blink fazi: 0.7s ac / 0.7s kapa ─────────────── */
     if (now - t_blink >= 700)
@@ -1086,11 +1429,14 @@ int main(void)
          * 2) SARJ TAKILIYKEN: buzzer+kontaktor HARIC her sey TAMAMEN KAPALI
          *    (sinyal/far/silecek/stop OFF; buzzer kendi ters mantigiyla sessiz
          *    bekler, kontaktor Sarj_Kontrol'de yonetilir).
-         * 3) SARJDAN CIKINCA: fisten cekilme haberi gelince ACILISTAKI GIBI
-         *    1 sn bekletme -> optolar yerine gelsin, sonra sistem aktif olsun. */
+         * 3) SARJDAN CIKIS SEKANSI BOYUNCA (kont_durum != SURUS): fis cekildi
+         *    ama kontaktor henuz birakilmadi / precharge suruyor -> hicbir
+         *    role oynamasin (isik/buzzer yuku gecise karismasin).
+         * 4) SARJDAN CIKINCA: kontaktor GERCEKTEN birakildiktan sonra
+         *    ACILISTAKI GIBI 1 sn bekletme -> optolar/sistem otursun. */
         uint8_t sarj_gecis = ((t_sarj_cikis != 0u) &&
                               ((now - t_sarj_cikis) < SARJ_CIKIS_GRACE_MS)) ? 1u : 0u;
-        if (now < BOOT_GRACE_MS || obc_link || sarj_gecis)
+        if (now < BOOT_GRACE_MS || obc_link || (kont_durum != KONT_SURUS) || sarj_gecis)
         {
             HAL_GPIO_WritePin(SOL_ROLE_GPIO_Port,     SOL_ROLE_Pin,     ROLE_OFF);
             HAL_GPIO_WritePin(SAG_ROLE_GPIO_Port,     SAG_ROLE_Pin,     ROLE_OFF);
@@ -1110,7 +1456,12 @@ int main(void)
         if (HAL_GPIO_ReadPin(FAR_BUTON_GPIO_Port,      FAR_BUTON_Pin)      == OPTO_AKTIF) g_raw |= 0x04; /* far: buton=opto LOW (ters okuma kaldirildi; bosta role cekmesin) */
         if (HAL_GPIO_ReadPin(SAG_KAPI_GPIO_Port,       SAG_KAPI_Pin)       == OPTO_AKTIF) g_raw |= 0x08;
         if (HAL_GPIO_ReadPin(SOL_KAPI_GPIO_Port,       SOL_KAPI_Pin)       == OPTO_AKTIF) g_raw |= 0x10;
-        if (HAL_GPIO_ReadPin(FREN_GIRIS_GPIO_Port,     FREN_GIRIS_Pin)     != OPTO_AKTIF) g_raw |= 0x20; /* fren: opto TERS kablolu (bosta AKTIF okunuyor) -> ters okuma */
+        /* FREN: 31.08.2026 - ters okuma KALDIRILDI. Onceki "!= OPTO_AKTIF"
+         * ile stop lambasi TERS calisiyordu (pedala basinca sonuyordu) ve
+         * kadranda da ters gorunuyordu. fren_aktif hem STOP rolesini hem
+         * telemetriyi besledigi icin bu tek satir ikisini birden duzeltir.
+         * Tekrar terslenirse: "==" -> "!=" yap. */
+        if (HAL_GPIO_ReadPin(FREN_GIRIS_GPIO_Port,     FREN_GIRIS_Pin)     == OPTO_AKTIF) g_raw |= 0x20;
         if (HAL_GPIO_ReadPin(DORTLU_BUTON_GPIO_Port,   DORTLU_BUTON_Pin)   == OPTO_AKTIF) g_raw |= 0x40;
 #if defined(SILECEK_BILGISI_Pin)
         if (HAL_GPIO_ReadPin(SILECEK_BILGISI_GPIO_Port, SILECEK_BILGISI_Pin) == OPTO_AKTIF) g_raw |= 0x80; /* silecek: switch=opto LOW (ters okuma kaldirildi; bosta role cekmesin) */
@@ -1173,35 +1524,102 @@ int main(void)
         /* --- UYARI / ACIL DURUM: kritik sartlardan biri varsa roleyi cek --- */
         {
             uint8_t uyari = 0;
-#if UYARI_KELLY_KOPUK
-            /* Kelly 5 sn sustuysa alarm; ANCAK sarjdan yeni cikildiysa CALMAZ:
-             * kontaktor 5 sn bekliyor + Kelly'nin acilip CAN'e baslamasi zaman
-             * aliyor -> toparlanma penceresi taninir. */
-            if (((now - kel_last_tick) > UYARI_KELLY_KOPUK_MS) &&
-                !((t_sarj_cikis != 0u) && ((now - t_sarj_cikis) < SARJ_SONRASI_ALARM_SUSKUN_MS)))
-                uyari = 1;
-#endif
-#if UYARI_KELLY_HATA
-            if (kel_fault != 0) uyari = 1;                  /* kontrolcu hata bildiriyor */
-#endif
-#if UYARI_BMS_KORUMA
-            if (bms_ok && (bms_prot0 | bms_prot1 | bms_alarm0 | bms_alarm1))
-                uyari = 1;                                  /* BMS koruma/alarm aktif */
-#endif
-#if UYARI_SICAKLIK
-            if (kelly_ok && (kel_mot_tmp >= UYARI_MOT_SIC_MAX ||
-                             kel_ctrl_tmp >= UYARI_KTRL_SIC_MAX))
-                uyari = 1;                                  /* asiri sicaklik */
-#endif
-#if UYARI_DUSUK_SOC
-            if (bms_ok && bms_soc <= UYARI_SOC_MIN) uyari = 1;  /* kritik dusuk batarya */
-#endif
+            /* ===== PD3 ALARMI KOMPLE DEVRE DISI (01.09.2026, istek uzerine) =====
+             * TUM kosullar asagida yorumda -> "uyari" hep 0 kalir -> PD3
+             * her turda UYARI_OFF yazilir, yani role SUREKLI BIRAKIK tutulur
+             * (pin bosta birakilmaz, bilerek surulur - daha guvenli).
+             * Buzzer ve flasor hicbir kosulda calmaz.
+             * ACMAK ICIN: istenen kosulun "//" isaretlerini hem burada hem
+             * makro tanimlarinda kaldir. Kosullar birbirinden bagimsizdir. */
+/* ---- KELLY-KOPUK ALARMI IPTAL (31.08.2026, istek uzerine) ---- */
+//#if UYARI_KELLY_KOPUK
+//            /* Kelly 5 sn sustuysa alarm; ANCAK sarjdan yeni cikildiysa CALMAZ:
+//             * kontaktor 5 sn bekliyor + Kelly'nin acilip CAN'e baslamasi zaman
+//             * aliyor -> toparlanma penceresi taninir. */
+//            if ((now > UYARI_KELLY_ALARM_GECIKME_MS) &&
+//                ((now - kel_last_tick) > UYARI_KELLY_KOPUK_MS) &&
+//                !((t_sarj_cikis != 0u) && ((now - t_sarj_cikis) < SARJ_SONRASI_ALARM_SUSKUN_MS)))
+//                uyari = 1;
+//#endif
+//#if UYARI_KELLY_HATA
+//            /* SADECE link CANLIYKEN gecerli: Kelly koptugunda kel_fault son
+//             * degerinde DONAR (sadece cerceve gelince guncellenir). kelly_ok
+//             * kapisi olmadan alarm bayat bir hata degerine takili kalirdi. */
+//            if (kelly_ok && (kel_fault != 0)) uyari = 1;    /* kontrolcu hata bildiriyor */
+//#endif
+//#if UYARI_BMS_KORUMA
+//            /* BMS koruma/alarm aktifse alarm; ANCAK sarjdan yeni cikildiysa
+//             * susturma penceresi burada da gecerli: cikis aninda bayraklar
+//             * kisa surelik oynayabiliyor, buzzer+flasor yuku o anda devreye
+//             * girip girisleri bozmasin (log kaniti ayni mekanizma). Bayrak
+//             * pencere sonunda HALA aktifse alarm normal calar. */
+//            /* 31.08.2026: ALARM (uyari) bitleri KALDIRILDI - yalnizca KORUMA
+//             * bitleri otturur. Sebep: alarm bitleri (DesarjYuksekAkim,
+//             * SarjYuksekAkim, HucreYuksekV...) normal ama sinira yakin
+//             * calismada yaniyordu; sert hizlanmada buzzer otuyordu.
+//             * bms_alarm0/1 telemetride (balrm) GORUNMEYE DEVAM EDIYOR. */
+//            if (bms_ok && (bms_prot0 | bms_prot1) &&
+//                !((t_sarj_cikis != 0u) && ((now - t_sarj_cikis) < SARJ_SONRASI_ALARM_SUSKUN_MS)))
+//                uyari = 1;
+//#endif
+//#if UYARI_SICAKLIK
+//            if (kelly_ok && (kel_mot_tmp >= UYARI_MOT_SIC_MAX ||
+//                             kel_ctrl_tmp >= UYARI_KTRL_SIC_MAX))
+//                uyari = 1;                                  /* asiri sicaklik */
+//#endif
+/* ---- SOC ALARMI IPTAL (31.08.2026, istek uzerine) ---- */
+//#if UYARI_DUSUK_SOC
+//            if (bms_ok && bms_soc <= UYARI_SOC_MIN) uyari = 1;  /* kritik dusuk batarya */
+//#endif
 #if UYARI_BMS_KOPUK
-            if (!bms_ok) uyari = 1;                         /* BMS CAN kopuk */
+            /* BMS KOPUK: bms_last_tick tazelenmiyorsa BMS susmus demektir.
+             * Acilis gecikmesi + sarjdan cikis penceresi Kelly-kopuk ile AYNI
+             * mantikta uygulanir (gecis aninda nuisance alarm olmasin). */
+            if ((now > UYARI_BMS_ALARM_GECIKME_MS) &&
+                ((now - bms_last_tick) > UYARI_BMS_KOPUK_MS) &&
+                !((t_sarj_cikis != 0u) && ((now - t_sarj_cikis) < SARJ_SONRASI_ALARM_SUSKUN_MS)))
+                uyari = 1;                                  /* BMS CAN kopuk */
 #endif
-            /* Emerson (sarj) TAKILIYKEN buzzer/flasor CALMASIN: sarjda AKS zaten
-             * calisir, Kelly bilerek KOPUK gosterilir -> alarm bastirilir. */
-            if (obc_link) uyari = 0;
+//#if UYARI_BMS_SICAKLIK
+//            /* BATARYA SICAKLIGI: mevcut UYARI_SICAKLIK sadece MOTOR/KONTROLCU
+//             * bakiyordu (Kelly verisi). Batarya sicakligi (0x356) hic
+//             * kontrol edilmiyordu - LFP icin kritik. */
+//            if (bms_ok && ((bms_temp_x10 >= UYARI_BMS_SIC_MAX) ||
+//                           (bms_temp_x10 <= UYARI_BMS_SIC_MIN)))
+//                uyari = 1;
+//#endif
+/* ---- BILEREK DEVRE DISI (31.08.2026, istek uzerine): hucre gerilim ucu +
+ * hucre dengesizligi. Makrolari yukarida, yine yorumda. ACMAK ICIN "//"
+ * isaretlerini hem burada hem makro blogunda kaldir. ---- */
+//#if UYARI_HUCRE_GERILIM
+//            /* HUCRE GERILIM UCLARI (0x200). BMS kendi korumasini da bildirir
+//             * (UYARI_BMS_KORUMA) ama bu esikler daha ERKEN uyarir.
+//             * DIKKAT: cmax/cmin 0x200 mesajindan gelir; BMS bu mesaji
+//             * gondermezse degerler 0 kalir -> "> 0" kontrolu SART, yoksa
+//             * 0 <= esik surekli dogru olup yanlis alarm verirdi. */
+//            if (bms_ok && (bms_cmax_mv > 0u) && (bms_cmax_mv >= UYARI_HUCRE_MAX_MV))
+//                uyari = 1;
+//            if (bms_ok && (bms_cmin_mv > 0u) && (bms_cmin_mv <= UYARI_HUCRE_MIN_MV))
+//                uyari = 1;
+//#endif
+//#if UYARI_HUCRE_FARK
+//            /* HUCRE DENGESIZLIGI: bozulan hucrenin erken habercisi.
+//             * Sarj sonu/yuk altinda fark gecici buyuyebilir -> nuisance riski. */
+//            if (bms_ok && (bms_cmax_mv > 0u) && (bms_cmin_mv > 0u) &&
+//                ((uint16_t)(bms_cmax_mv - bms_cmin_mv) >= UYARI_HUCRE_FARK_MV))
+//                uyari = 1;
+//#endif
+#if UYARI_NTC_SICAKLIK
+            /* HARICI NTC >= 50 C -> buzzer + flasor. Histerezis ntc_uyari
+             * icinde uygulanir (48 C altinda birakir). Sensor yok veya kablo
+             * hatasi varsa ntc_gecerli = 0 olur, bu kosul HIC calismaz. */
+            if (ntc_gecerli && ntc_uyari) uyari = 1;
+#endif
+            /* Emerson TAKILIYKEN veya sarjdan cikis sekansi SURERKEN buzzer/
+             * flasor CALMASIN: sarjda Kelly bilerek KOPUK gosterilir, cikista
+             * da gecis tamamlanmadan ekstra role yuku istenmez. (Bu blok role
+             * bekletme kapisi sayesinde normalde zaten calismaz; emniyet.) */
+            if (obc_link || (kont_durum != KONT_SURUS)) uyari = 0;
             uyari_aktif = uyari;
 #if defined(UYARI_ROLE_Pin)
             HAL_GPIO_WritePin(UYARI_ROLE_GPIO_Port, UYARI_ROLE_Pin,
@@ -1210,11 +1628,31 @@ int main(void)
         }
         }  /* acilis yumusatma else sonu */
 
-        /* --- Gaz pedali ADC (PA1) --- */
-        HAL_ADC_Start(&hadc1);
-        if (HAL_ADC_PollForConversion(&hadc1, 5) == HAL_OK)
-            gaz_adc = (uint16_t)HAL_ADC_GetValue(&hadc1);
-        HAL_ADC_Stop(&hadc1);
+        /* --- ADC: gaz pedali (PA1) + harici NTC sicaklik (PB0) --- */
+        {
+            uint16_t v = ADC_Oku(ADC_CHANNEL_1, ADC_SAMPLETIME_3CYCLES);
+            if (v != 0xFFFFu) gaz_adc = v;
+
+            v = ADC_Oku(NTC_ADC_KANAL, ADC_SAMPLETIME_144CYCLES);
+            if (v != 0xFFFFu)
+            {
+                ntc_adc     = v;
+                ntc_sic_x10 = NTC_Cevir(v);
+                ntc_gecerli = (ntc_sic_x10 != NTC_GECERSIZ) ? 1u : 0u;
+            }
+
+            /* Esik + histerezis. GECERSIZ okuma hicbir seyi tetiklemez VE
+             * mevcut durumu DEGISTIRMEZ: kilit devredeyken kablo koparsa
+             * kontaktor kilidi kendiliginden ACILMAZ (emniyetli yon). */
+            if (ntc_gecerli)
+            {
+                if      (ntc_sic_x10 >= NTC_UYARI_X10)       ntc_uyari = 1u;
+                else if (ntc_sic_x10 <= NTC_UYARI_BIRAK_X10) ntc_uyari = 0u;
+
+                if      (ntc_sic_x10 >= NTC_KONT_X10)        ntc_kilit = 1u;
+                else if (ntc_sic_x10 <= NTC_KONT_BIRAK_X10)  ntc_kilit = 0u;
+            }
+        }
     }
 
     /* ── 2) CAN link sagligi ────────────────────────────────── */
@@ -1223,10 +1661,10 @@ int main(void)
     if ((now - bms_last_tick) > BMS_TIMEOUT_MS)
         bms_ok = 0;
 
-    /* Emerson (sarj) TAKILIYKEN motor surucu KULLANILAMAZ -> Kelly KOPUK goster.
-     * Kelly aç/kapat bataryaya bagli oldugu icin sarjda bile veri gelebilir;
-     * sarj modunda motor devre disi kabul edilir. */
-    if (obc_link)
+    /* Emerson (sarj) TAKILIYKEN veya cikis sekansi tamamlanmamisken motor
+     * surucu KULLANILAMAZ -> Kelly KOPUK goster (kontaktor hala sarj
+     * tarafinda; motor devre disi kabul edilir). */
+    if (obc_link || (kont_durum == KONT_CIKIS_BEKLE))
         kelly_ok = 0;
 
     /* ── 2a) Motor surucu (Kelly) durumu DEGISTIGI an Pi'ye HEMEN yolla ──
@@ -1296,6 +1734,7 @@ int main(void)
 
             if (mcp_eflg & 0x20)                    /* TXBO: bus-off -> kilitlenmesin */
             {
+                mcp_busoff_cnt++;                   /* TANI: kacinci bus-off */
                 mcp_hazir = MCP2515_Init();         /* yeniden baslat (kurtarma) */
                 mcp_rec = 0; mcp_tec = 0;           /* reset sonrasi sayaclar sifir */
                 t_mcp_reset = now;                  /* TEC yeniden oturana kadar bekle */
