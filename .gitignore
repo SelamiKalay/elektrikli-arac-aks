@@ -5,3 +5,6 @@ Release/
 *.su
 *.list
 *.map
+
+# Makineye özgü CubeIDE ayarları
+.settings/language.settings.xml
