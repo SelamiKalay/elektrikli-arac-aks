@@ -6,5 +6,5 @@ Release/
 *.list
 *.map
 
-# Makineye özgü CubeIDE ayarları
-.settings/language.settings.xml
+# Makineye özgü CubeIDE ayarları (IDE açılışta yeniden üretir)
+.settings/
