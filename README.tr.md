@@ -99,3 +99,10 @@ Geliştirme geçmişinin tamamı commit kayıtlarında korunmuştur.
 `Drivers/` klasörü STMicroelectronics ve Arm'ın STM32F4 HAL ve CMSIS
 kütüphanelerini içerir; bunlar kendi lisanslarıyla dağıtılır (ilgili klasörlerdeki
 `LICENSE.txt` dosyalarına bakın).
+
+## Lisans
+
+Projenin kendi kodu [MIT Lisansı](LICENSE) ile lisanslanmıştır
+(© 2026 Mustafa Enes Elbüz, Selami Kalay). `Drivers/` altındaki üçüncü taraf kod ve
+`Core/` içindeki STM32CubeMX tarafından üretilmiş kısımlar STMicroelectronics/Arm'ın
+özgün lisanslarını korur.

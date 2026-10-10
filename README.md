@@ -97,3 +97,10 @@ The full development history is preserved in the commit log.
 
 `Drivers/` contains the STM32F4 HAL and CMSIS by STMicroelectronics and Arm,
 distributed under their own licenses (see the `LICENSE.txt` files in those folders).
+
+## License
+
+The project's own code is licensed under the [MIT License](LICENSE)
+(© 2026 Mustafa Enes Elbüz, Selami Kalay). Third-party code under `Drivers/` and the
+STM32CubeMX-generated parts of `Core/` keep their original STMicroelectronics/Arm
+licenses.
